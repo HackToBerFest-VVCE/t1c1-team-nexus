@@ -1,0 +1,42 @@
+# ===== Secrets =====
+# NEVER commit the real .env file — it holds the Gemma/Gemini API key.
+.env
+.env.local
+.env.*.local
+*.key
+secrets.json
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ===== Testing / coverage =====
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ===== IDE / editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Build / logs =====
+*.log
+instance/
