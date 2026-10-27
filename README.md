@@ -1,327 +1,138 @@
-# AccidentGuard — AI-Powered Accident Detection & Alert System
+# AccidentGuard — AI-Assisted Accident Detection & Emergency Alert Platform
 
-**Project summary**
+**Team Nexus · Team 11 · Hacktoberfest × VectorFlow 2026 · Challenge A: Best Use of Gemma 4**
 
-- AccidentGuard turns simulated driving telemetry into clear incident understanding.
-- A transparent Python rule engine classifies each event — normal driving, suspicious event, or possible accident — with a severity indicator.
-- The real **Google Gemma 4** model then writes a plain-language summary, flags details to watch, and suggests cautious next steps.
-- A responsive dark dashboard shows the rule-engine verdict and the AI summary separately, with a live AI connection status.
-- This is a hackathon simulation prototype: no real sensors, GPS, or emergency notifications.
+*Sensors detect. Gemma 4 interprets and communicates. Gemma 4 reasons. Python decides.*
 
-This project is a **hackathon prototype**. It uses **illustrative, simulated data
-only** — there are no real sensors, no live GPS, and no emergency-service
-notifications. The real AI integration is genuine: the app makes an actual API
-call to the hosted Gemma 4 model and displays the model's real response.
+AccidentGuard simulates the full chain from dual-sensor data to ambulance dispatch — driven by real Google Gemma 4 API calls — on a responsive three-screen web app. All data is simulated. No real sensors, GPS, emergency calls or ambulances.
 
 ---
 
-## Problem statement & proposed solution
+## Full pipeline (7 steps)
 
-**Problem:** After a road incident, the raw telemetry (sudden deceleration,
-impact scores, lane deviation) is hard for a non-expert to interpret. People need
-a quick, plain-language understanding of what the data suggests and what cautious
-next steps make sense — without falsely claiming a real accident occurred.
+```
+Sensor data → Python validation → Sensor fusion → False-alarm filter →
+Gemma 4 → Python safety layer → Victim check → Dispatch → Dashboard
+```
 
-**Solution:** AccidentGuard demonstrates a three-stage pipeline:
-
-1. **Simulated event generation** — produces labelled driving readings (no real
-   hardware).
-2. **Transparent rule-based classification** — a simple, auditable engine sorts
-   each event into *normal driving*, *suspicious event*, or *possible accident*,
-   with a severity indicator. This logic is clearly separated from the AI.
-3. **Gemma 4 interpretation** — the real Gemma model receives the (privacy-safe)
-   event data and returns a summary, points to watch, and cautious recommendations.
-   It is constrained to avoid inventing readings or claiming certainty.
+1. **Sensor data** — Two simulated streams per event:
+   - *Phone*: accelerometer peak (g), gyroscope (deg/s), GPS speed change, GPS location label.
+   - *Vehicle/IoT*: impact sensor score (0–1), airbag/crash-sensor flag, post-impact movement, ECU speed change.
+2. **Python validation** — Sanity-checks ranges before the pipeline proceeds.
+3. **Sensor fusion** — Counts how many of 6 independent signals agree on an impact. Shows "Signals agreeing: N of 6" with chips. A possible accident needs ≥3 signals including at least one vehicle or stop signal.
+4. **False-alarm filter** — Rule-based Python filter rejects known false-alarm patterns *before* calling Gemma:
+   - **Phone drop** → phone accel high, vehicle quiet, no GPS speed change → rejected.
+   - **Pothole** → moderate vehicle impact, no crash flag, low phone accel → rejected.
+   - **Hard braking** → high decel, no impact signal → rejected.
+   - **Real crash** → impact + sudden stop + no movement → passes.
+   - Rejected events are still logged in history with a "Rejected" tag.
+5. **Gemma 4** — Two real API calls (see below). Falls back to a clearly-labelled rule-based template when the API is unavailable.
+6. **Python safety layer** — Makes the **FINAL** severity decision with fixed, auditable rules. If Gemma and the rules disagree, the safer validated result is used and "disagreement handled" is flagged.
+7. **Victim check → Dispatch** — Medium/high: 10-second countdown. Critical: skips countdown and alerts immediately. Nearest available ambulance offered first (Haversine); escalates after 20 s.
 
 ---
 
-## Features & architecture
+## How we use Gemma 4
 
-**Features**
-- Start Demo and Generate Sample Event controls (with event-type selector).
-- Simulated event classification with severity indicator (low/medium/high/critical).
-- Event timestamp and clearly-labelled *simulated* location.
-- Real **Gemma 4** incident summary, attention points, recommendations, and
-  severity opinion.
-- AI connection status indicator with three states:
-  **Connected** (real Gemma response received), **Error** (request failed),
-  **Not configured** (API key missing). The UI never shows "Connected" unless a
-  real response was received.
-- Incident history with per-event AI badge (Gemma vs. fallback).
-- Total events and per-category counts.
-- Loading indicators and clear error messages.
-- Accessible, mobile-friendly dark dashboard.
+**Model: `gemma-4-26b-a4b-it`** (verified against the [official Gemini API docs](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api); falls back to `gemma-4-31b-it`). Never substitutes Gemini or another model.
 
-**Architecture / pipeline**
+**Call 1 — Incident assessment.** Gemma receives: event category, rule-engine severity, simulated readings, fusion signal count, and filter result.
+Returns only a JSON object: `{severity, confidence, evidence[], uncertainty, action, alert_en, alert_kn, alert_hi, responder_briefing[3]}`.
 
-```
-Simulated event ─▶ Python rule engine (classification + severity)
-                                       │
-                                       ▼
-                          privacy-safe payload ─▶ Gemma 4 API ─▶ structured summary
-                                       │                                   │
-                                       ▼                                   ▼
-                                 dashboard display (rule verdict shown separately from AI summary)
-```
+**Call 2 — Dispatch briefing update.** Triggered when a unit accepts. Gemma receives the Call 1 assessment, victim response status, elapsed seconds, and the unit name with ETA. Returns an updated 3-line responder briefing. If Call 2 fails, the Call 1 briefing is reused and labelled.
 
-The Flask backend (`app.py`) exposes JSON endpoints; the frontend
-(`templates/index.html`, `static/script.js`) renders results and drives the demo
-loop. State is held in memory (no database) — appropriate for a demo.
+**Optional Call 3 — Crash photo analysis.** The dashboard and victim screen allow uploading a simulated bystander photo. Gemma analyses it and returns: vehicles, visible injuries, fire/fuel risk, road blocked, notes, confidence. If the model rejects images, the result shows "Scene analysis unavailable for this model" and the pipeline continues normally; no invented scene descriptions.
 
-**File structure**
+**Python makes the final decision.** Gemma can raise or lower severity concerns, but the safety layer's fixed rules always have the last word.
 
-```
-AccidentGuard/
-├── app.py                      # Flask backend + routes
-├── accident_detection.py       # Simulated events + transparent rule classifier
-├── gemma_service.py            # REAL Gemma 4 API integration + status + fallback
-├── requirements.txt
-├── .env.example                # placeholders only (safe to commit)
-├── .gitignore                  # ignores .env and secrets
-├── README.md
-├── templates/
-│   └── index.html              # dashboard
-├── static/
-│   ├── style.css               # dark responsive theme
-│   └── script.js               # frontend logic + demo loop
-└── tests/
-    ├── test_accident_detection.py   # mock tests (no key needed)
-    ├── test_gemma_integration.py    # REAL API tests (skip without a key)
-    └── manual_integration_check.py  # standalone proof-of-integration script
-```
+**Gemma ON/OFF toggle.** When OFF, the system uses a rule-based template labelled "Non-AI fallback" — useful to show judges the difference.
 
 ---
 
 ## Exact Gemma 4 model ID used
 
-**Primary model: `gemma-4-26b-a4b-it`**
+`gemma-4-26b-a4b-it` — documented fallback: `gemma-4-31b-it`.  
+SDK: `from google import genai; client.models.generate_content(model=..., ...)` (new `google-genai` SDK, not the legacy `google-generativeai`).
 
-This was **verified against Google's official documentation**
-([Run Gemma with the Gemini API](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api)),
-which lists exactly two supported Gemma 4 models on the Gemini API:
+---
 
-| Model ID | Role |
-|---|---|
-| `gemma-4-26b-a4b-it` | Primary (used by this project) |
-| `gemma-4-31b-it` | Documented fallback |
+## Three screens
 
-The integration uses the official **`google-genai`** SDK (`from google import
-genai`), **not** the legacy `google-generativeai` package, and calls
-`client.models.generate_content(model="gemma-4-26b-a4b-it", ...)` with a system
-instruction that constrains the model's behaviour. The model ID is set via
-`GEMMA_MODEL_ID` in `.env` and validated against the verified list; an unknown ID
-falls back to `gemma-4-26b-a4b-it` rather than silently substituting another model.
-The app never substitutes Gemini or another model for Gemma 4.
-
-### How Gemma contributes to the solution
-
-The rule engine decides the *category* using fixed thresholds. Gemma provides the
-*interpretation* the rule engine cannot: it rephrases the simulated event in plain
-language, highlights which supplied details may need attention, and proposes
-cautious next steps. Because it receives a constrained system instruction, it does
-not invent sensor readings, does not claim certainty that a real accident
-occurred, and reminds users to contact actual emergency services for real
-incidents. The engine's verdict and Gemma's summary are always shown separately on
-the dashboard so their roles stay distinct.
+- **Dashboard (`/`)** — Scenario selector (Normal, Suspicious, Possible accident, Real crash, Phone drop, Pothole, Hard braking, Random), quick-demo buttons (Real crash / Phone drop), 7-step pipeline strip with one-line result per step, phone + vehicle sensor panels, rule-engine verdict, Gemma assessment card (evidence, uncertainty, confidence, first-aid tips in EN/KN/HI, Call 2 briefing, scene analysis), safety + incident panel with victim-check mirror, active incidents, history, stats.
+- **Victim screen (`/victim`, mobile-first)** — Safe by default. On incident: full-screen "Are you OK?" with 10-second countdown ring, **I'M SAFE** and **I NEED HELP** buttons, beep + vibration, then post-alert timeline, EN/KN/HI first-aid tabs, simulated location + unit ETA. Never shows evidence, confidence or sensor numbers.
+- **Ambulance screen (`/ambulance`, desktop)** — "Viewing as unit" dropdown, auto-selects highest-severity incident, incident list with escalation countdown, Victim analysis card (severity, confidence bar, evidence, uncertainty, action, scene analysis, 3-line briefing, fusion signals, safety-layer note, victim response status, disclaimer), SVG map with all units + incident pin + nearest-unit line, Ambulance services table (availability, distance km, ETA min, nearest first), Accept/En route/Arrived/Resolved buttons (transitions enforced), counters.
 
 ---
 
 ## Installation & setup
 
-**Prerequisites:** Python 3.10+ and pip.
-
 ```bash
-# 1. (Recommended) create a virtual environment
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-
-# 2. Install dependencies
+.venv\Scripts\activate          # Windows; macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-
-# 3. Create your local config from the example (placeholders only)
-#    Windows:
-copy .env.example .env
-#    macOS/Linux:
-cp .env.example .env
+copy .env.example .env          # macOS/Linux: cp .env.example .env
 ```
 
-## API key configuration
+Edit `.env` and set:
+```
+GEMINI_API_KEY=your_real_key_here
+GEMMA_MODEL_ID=gemma-4-26b-a4b-it
+```
+Get a free key at: https://aistudio.google.com/app/apikey
 
-1. Get a free key from **Google AI Studio**: https://aistudio.google.com/app/apikey
-2. Open your local `.env` file (created above) and set:
-   ```
-   GEMINI_API_KEY=your_real_key_here
-   GEMMA_MODEL_ID=gemma-4-26b-a4b-it
-   ```
-3. The key is read **only** from the `GEMINI_API_KEY` environment variable. It is
-   never sent to the frontend, never logged, and never included in error messages.
-4. `.env` is in `.gitignore` — **never commit it**. Only `.env.example`
-   (placeholders) is tracked.
+The key is loaded with `load_dotenv(..., override=True)`, stripped of whitespace/quotes, and **never** sent to the browser, logged, or included in error messages.
 
-> If you run without a key, the dashboard still works in **non-AI fallback mode**:
-   summaries are produced by a clearly-labelled rule-based fallback (never
-   presented as Gemma output), and the AI badge shows **Not configured**.
-
-## How to run the application
+## How to run
 
 ```bash
 python app.py
+# Open: http://127.0.0.1:5000 | /victim | /ambulance
 ```
-
-Then open **http://127.0.0.1:5000** in your browser.
-
-- Click **Generate Sample Event** (pick an event type first) to create one event,
-  or **Start Demo** to auto-generate events every few seconds. Each event is
-  summarised by Gemma 4 (if a key is set) or by the fallback (if not).
-- Watch the **AI badge** in the header: it flips to **Connected** only after a
-  real Gemma response arrives.
 
 ## How to test
 
-**Mock tests** (no key, no network):
 ```bash
-python -m pytest tests/test_accident_detection.py -v
-```
+# Mock tests (no key needed) — 70+ pass
+python -m pytest -q
 
-**Real Gemma 4 API tests** (require your key in `.env`):
-```bash
+# Real Gemma 4 integration (needs key in .env; skip without a key)
 python -m pytest tests/test_gemma_integration.py -v
-```
-These tests are **skipped automatically** when no key is set, so the full suite
-stays green for offline runs.
 
-**Full suite:**
-```bash
-python -m pytest -v
-```
-
-**Standalone proof-of-integration** (no pytest, prints a clear PASS/FAIL):
-```bash
+# Standalone proof-of-integration (prints CONNECTED or FAIL with reason)
 python tests/manual_integration_check.py
 ```
-With a valid key it prints `RESULT: CONNECTED — real Gemma 4 integration
-confirmed.` along with the model ID and the actual Gemma response — this is the
-cleanest artifact to show a judge.
-
-**Required test cases covered**
-
-| # | Case | How |
-|---|---|---|
-| 1 | Normal driving event | `test_normal_driving_event` |
-| 2 | Suspicious event | `test_suspicious_driving_event` |
-| 3 | Possible accident event | `test_possible_accident_event` |
-| 4 | Successful real Gemma 4 request | `test_real_gemma_summary_for_possible_accident` (+ manual script) |
-| 5 | Missing API key | app runs in fallback; badge = Not configured |
-| 6 | API failure / timeout | error path returns status `error` + fallback (verified live with an invalid key) |
-| 7 | Dashboard display of the AI response | verified by booting the server and loading the page |
 
 ---
 
-## Evidence of the real Gemma integration
+## 2-minute demo script
 
-- **`gemma_service.py`** makes a real `client.models.generate_content(...)`
-  call to `gemma-4-26b-a4b-it` via the official `google-genai` SDK.
-- The **error path was verified live**: with an intentionally invalid key, Google's
-  API returned `400 INVALID_ARGUMENT ... API key not valid`, which the app caught
-  and surfaced as status `error` while redacting the key. This proves the request
-  reaches Google's `generativelanguage.googleapis.com` endpoint with the correct
-  model ID.
-- To record final evidence with a real key, run `python
-  tests/manual_integration_check.py` and save its output — it shows the model ID
-  and the actual response text.
-- The dashboard AI badge shows **Connected** only after a real response; the
-  fallback is always labelled "Non-AI fallback", never "Gemma".
+**Setup:** add key to `.env`, run `python tests/manual_integration_check.py` → leave `RESULT: CONNECTED` visible.
 
-## Current limitations
+1. **(30 s) Phone drop gets rejected** — Select *Phone drop*, click Generate Event. Pipeline strip shows "False-alarm filter: FAILED". No victim countdown, no dispatch. History shows "Rejected: phone drop".
 
-- **Simulation only.** No real sensors, GPS, vehicle hardware, or live data.
-- **No emergency notifications.** The app recommends contacting emergency services
-  in text only; it does not place calls or messages.
-- **In-memory storage.** Event history resets when the server restarts.
-- **API quota / latency.** Real Gemma calls depend on your key's quota and network.
-- **Rule thresholds are illustrative.** The classifier uses example thresholds,
-  not values calibrated against real crash data — intentionally, because the data
-  is simulated.
-- **Safety scope.** This prototype must not be used for real-world accident
-  detection or any safety-critical decision.
+2. **(30 s) Real crash passes** — Select *Real crash*, click Generate. Pipeline lights up all 7 steps. Fusion shows "6 of 6 signals". Gemma 4 card shows real evidence, uncertainty, action. Safety layer: "agreed". Dispatch: auto-assigned, ETA shown.
+
+3. **(15 s) Victim screen asks "Are you OK?"** — Select *Suspicious event*, Generate. Open `/victim`. Full-screen countdown ring appears with I'M SAFE / I NEED HELP buttons.
+
+4. **(15 s) No answer → alert sent** — Let the 10 s countdown expire. Timeline on victim screen shows: Alert sent → Ambulance assigned → On the way with ETA.
+
+5. **(15 s) Ambulance screen** — Open `/ambulance`. Incident auto-selected. Ambulance services table shows distances and ETAs. SVG map shows unit-to-incident line. Click Accept (if auto-accept is OFF).
+
+6. **(15 s) Gemma ON vs OFF** — Toggle *Gemma 4 OFF*, generate a Real crash. Assessment card shows "Non-AI fallback". Toggle it back ON — Gemma gives real evidence and briefing.
 
 ---
 
-## GitHub workflow (for the team)
+## Limitations (simulation only)
 
-We use the organizers' existing repository. Do **not** create a replacement repo.
+- No real sensors, hardware, GPS tracking, or emergency service integration.
+- All sensor readings, ambulance positions, and "emergency contact notified" messages are illustrative.
+- Rule thresholds are not calibrated against real crash data.
+- In-memory state resets on server restart.
+- AI responses are real but the Gemma model is constrained to not claim certainty about real accidents.
+- Not for real-world or safety-critical use.
 
-**1. Review generated code first**
-```bash
-git status                 # see what changed
-git diff <file>            # review a specific file before staging
-```
-Never overwrite existing team files without reviewing them.
+## Security
 
-**2. Make the initial commit** (after reviewing):
-```bash
-git add app.py accident_detection.py gemma_service.py requirements.txt .env.example .gitignore README.md templates/ static/ tests/
-git status                 # confirm .env is NOT staged
-git commit -m "AccidentGuard: simulation engine + Gemma 4 integration + dashboard"
-```
-
-**3. Push to the designated repository:**
-```bash
-git push origin clean-main     # or the branch your organizers specified
-```
-Always push to a feature branch rather than directly to `main`/`master` unless
-the organizers ask otherwise.
-
-**4. Commit progress daily.** Small, frequent commits are better than one big
-push at the end.
-
-**5. Verify no secrets are tracked** before every push:
-```bash
-git diff --cached | Select-String -Pattern "AIza"      # Windows PowerShell
-# or on macOS/Linux:
-git diff --cached | grep -iE "AIza|api_key=.{10,}"
-```
-`.env` is gitignored; only `.env.example` (placeholders) should be tracked. If a
-key was ever committed by mistake, rotate it immediately in Google AI Studio.
-
----
-
-## Demo script (for judges)
-
-> **1 min setup + 2 min demo.**
-
-1. **Setup (pre-demo):** `pip install -r requirements.txt`, add your
-   `GEMINI_API_KEY` to `.env`, run `python tests/manual_integration_check.py`
-   and leave its `RESULT: CONNECTED` output visible as evidence.
-
-2. **The problem (20s):** Raw driving telemetry is hard to interpret. We need a
-   plain-language reading plus cautious next steps — without falsely claiming a
-   real accident.
-
-3. **The pipeline (30s):** Explain the three stages — simulated event → Python
-   rule engine → real Gemma 4 summary — and note the engine's verdict is shown
-   separately from the AI's summary.
-
-4. **Live demo (45s):** Run `python app.py`, open the dashboard. Click
-   **Start Demo**. Point out: events appear and get classified; the AI badge
-   flips to **Connected** as real Gemma responses arrive; the summary, attention
-   points, recommendations, and Gemma severity opinion update live; history and
-   stats increment.
-
-5. **Real integration proof (20s):** Show the header model ID
-   (`gemma-4-26b-a4b-it`), the "Gemma ✓" badges in history, and the
-   `manual_integration_check.py` output from step 1.
-
-6. **Limitations (15s):** State clearly that this is a simulation prototype — no
-   real sensors, GPS, or emergency notifications — and that Gemma never claims
-   certainty about a real accident.
-
----
-
-## License
-
-Project code is provided for the hackathon. The Gemma 4 model is accessed under
-Google's terms; see Google's Gemma documentation for usage and license details.
+- API key in `.env` only; `.gitignore` covers `.env`; `.env.example` contains only placeholders.
+- Key is never sent to the browser, logged, or included in error messages.
+- Key is redacted in all error strings before they leave Python.

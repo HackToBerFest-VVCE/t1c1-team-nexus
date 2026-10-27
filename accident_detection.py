@@ -289,3 +289,23 @@ def event_for_ai(classification: EventClassification) -> dict:
         },
         "rule_engine_notes": classification.rule_explanation,
     }
+
+
+def generate_from_streams(phone_stream, vehicle_stream,
+                          legacy_readings: dict) -> EventClassification:
+    """
+    Classify an event that was generated from dual sensor streams.
+    `legacy_readings` is the dict produced by sensor_fusion.streams_to_legacy_readings().
+    This keeps the rule engine working unchanged on backward-compatible fields.
+    """
+    r = DrivingReadings(
+        timestamp=_now_iso(),
+        speed_kmh=legacy_readings.get("speed_kmh", 50.0),
+        speed_delta_kmh=legacy_readings.get("speed_delta_kmh", 0.0),
+        deceleration_g=legacy_readings.get("deceleration_g", 0.0),
+        impact_score=legacy_readings.get("impact_score", 0.0),
+        lane_deviation_m=legacy_readings.get("lane_deviation_m", 0.0),
+        location_label=legacy_readings.get("location_label", "Simulated · Unknown"),
+    )
+    r.event_id = _make_event_id()
+    return classify_event(r)

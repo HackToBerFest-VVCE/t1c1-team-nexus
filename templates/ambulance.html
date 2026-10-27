@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AccidentGuard — Ambulance (Simulated)</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"/>
+  <link rel="stylesheet" href="{{ url_for('static', filename='ambulance.css') }}"/>
+</head>
+<body class="amb-body">
+<header class="app-header">
+  <div class="header-inner">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">🚑</div>
+      <div class="brand-text">
+        <h1>AccidentGuard · Ambulance</h1>
+        <p class="tagline">Dispatch console — AI-Assisted Accident Detection — simulation prototype</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <a href="/" class="nav-link">← Dashboard</a>
+      <a href="/victim" class="nav-link">🧍 Victim</a>
+      <label class="field-label" for="unitSelect">Viewing as unit:</label>
+      <select id="unitSelect" class="select"></select>
+    </div>
+  </div>
+</header>
+
+<main class="amb-main">
+  <section class="amb-counters">
+    <div class="stat-card"><span class="stat-num" id="cActive">0</span><span class="stat-label">Active</span></div>
+    <div class="stat-card stat-accident"><span class="stat-num" id="cCritical">0</span><span class="stat-label">Critical</span></div>
+    <div class="stat-card"><span class="stat-num" id="cRespTime">—</span><span class="stat-label">Avg response (simulated)</span></div>
+  </section>
+
+  <section class="amb-grid">
+    <!-- Incident list -->
+    <div class="card amb-list-card">
+      <div class="card-head"><h2>Incidents offered</h2><span class="muted" id="listCount">0</span></div>
+      <ul id="ambList" class="amb-list"><li class="placeholder">No incidents offered.</li></ul>
+    </div>
+
+    <!-- Victim analysis (Gemma 4) -->
+    <div class="card amb-detail-card">
+      <div class="card-head"><h2>Victim analysis (Gemma 4)</h2><span class="src-tag" id="detailSrc">—</span></div>
+      <div id="ambDetail"><p class="placeholder">Select an incident from the list.</p></div>
+      <div class="amb-actions" id="ambActions" hidden>
+        <button id="btnAccept" class="btn btn-primary" type="button">Accept</button>
+        <button id="btnEnRoute" class="btn btn-secondary" type="button">En route</button>
+        <button id="btnArrived" class="btn btn-secondary" type="button">Arrived</button>
+        <button id="btnResolved" class="btn btn-ghost" type="button">Resolved</button>
+      </div>
+    </div>
+
+    <!-- Map + ambulance table -->
+    <div class="card amb-map-card">
+      <div class="card-head"><h2>Map (simulated)</h2><span class="muted">nearest unit highlighted</span></div>
+      <svg id="map" viewBox="0 0 100 80" preserveAspectRatio="xMidYMid meet" class="amb-map" aria-label="Simulated map">
+        <line id="nearestLine" x1="0" y1="0" x2="0" y2="0" stroke="var(--ok)" stroke-width="0.5" stroke-dasharray="2,1" opacity="0"/>
+      </svg>
+      <p class="muted v-small" id="mapNote">No incident selected.</p>
+
+      <!-- Ambulance services table -->
+      <div style="margin-top:14px">
+        <div class="card-head"><h3 style="margin:0;font-size:.95rem">Ambulance services nearby</h3></div>
+        <table class="amb-table" id="unitsTable">
+          <thead><tr><th>Unit</th><th>Status</th><th>Dist km</th><th>ETA min</th></tr></thead>
+          <tbody id="unitsBody"><tr><td colspan="4" class="placeholder">—</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="app-footer" style="max-width:1200px;margin:0 auto;padding:0 20px 24px">
+  Team Nexus · Team 11 · Hacktoberfest × VectorFlow 2026 · Challenge A: Best Use of Gemma 4 ·
+  AccidentGuard — simulation prototype · Not for real-world use
+</footer>
+
+<script src="{{ url_for('static', filename='ambulance.js') }}"></script>
+</body>
+</html>

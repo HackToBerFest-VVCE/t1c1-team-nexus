@@ -2,35 +2,35 @@
 AccidentGuard — Gemma 4 integration service
 ==========================================
 
-This module performs the REAL API call to a hosted Gemma 4 model through the
-Google Gemini API (the new `google-genai` SDK), as documented at:
-    https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api
+Verified model: gemma-4-26b-a4b-it (Gemini API, google-genai SDK).
+Docs: https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api
 
-Verified supported model IDs (checked against the official docs):
-    - gemma-4-26b-a4b-it   (preferred / default)
-    - gemma-4-31b-it       (documented fallback)
+Two real calls:
+  Call 1 — incident assessment (JSON: severity, confidence, evidence, uncertainty,
+            action, alert_en/kn/hi, responder_briefing).
+  Call 2 — dispatch briefing update (JSON: responder_briefing, updated_action).
 
-Design rules (project requirements):
-  * The API key is read ONLY from the GEMINI_API_KEY environment variable.
-    It is never logged, never returned to the frontend, and never placed in
-    error messages.
-  * Status indicator has exactly three real states:
-        connected      -> a real Gemma API response was received
-        error          -> the request failed
-        not_configured -> the API key is missing
-  * A clearly-labelled NON-AI fallback keeps the demo running when the API is
-    unavailable. It is NEVER labelled as coming from Gemma.
-  * Gemma is constrained by a system instruction so it must not invent sensor
-    readings, must not claim certainty about a real accident, and must not
-    replace emergency professionals.
+Optional third call: crash photo analysis (inline image, JSON result).
+
+Key loading:
+  load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+              override=True)
+  Key is stripped of whitespace and quotes. Never logged, never sent to browser.
+
+Python (safety_layer.py) makes the FINAL severity decision — never Gemma.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+            override=True)
 
 from google import genai
 from google.genai import types
@@ -41,55 +41,48 @@ from google.genai import errors as genai_errors
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Verified against the official Gemma-on-Gemini-API docs.
 VERIFIED_MODELS = ("gemma-4-26b-a4b-it", "gemma-4-31b-it")
 DEFAULT_MODEL = "gemma-4-26b-a4b-it"
 
 ENV_KEY = "GEMINI_API_KEY"
 ENV_MODEL = "GEMMA_MODEL_ID"
 ENV_TIMEOUT = "GEMMA_TIMEOUT"
-DEFAULT_TIMEOUT_MS = 30_000  # 30 seconds
+DEFAULT_TIMEOUT_MS = 20_000   # 20 s for real calls; check endpoint allows 15 s
 
 
 def _get_api_key() -> Optional[str]:
-    """Return the API key from the environment, or None if not set."""
-    key = os.environ.get(ENV_KEY, "").strip()
-    return key or None
+    """Read key from env, strip whitespace and quotes."""
+    raw = os.environ.get(ENV_KEY, "")
+    return raw.strip().strip('"').strip("'").strip() or None
 
 
 def _get_model_id() -> str:
-    """Return the configured model ID, defaulting to the preferred verified one."""
     model = os.environ.get(ENV_MODEL, "").strip() or DEFAULT_MODEL
-    if model not in VERIFIED_MODELS:
-        # Don't silently use an unknown model: fall back to the verified default.
-        return DEFAULT_MODEL
-    return model
+    return model if model in VERIFIED_MODELS else DEFAULT_MODEL
 
 
 def _get_timeout_ms() -> int:
-    """Return the API timeout in milliseconds.
-
-    GEMMA_TIMEOUT is read in SECONDS (matching .env.example), then converted to
-    milliseconds for the google-genai SDK's HttpOptions.timeout. A value <= 0 or a
-    non-numeric value falls back to the 30-second default.
-    """
     try:
-        seconds = int(os.environ.get(ENV_TIMEOUT, "30"))
-        if seconds <= 0:
-            seconds = 30
-        return seconds * 1000
+        s = int(os.environ.get(ENV_TIMEOUT, "20"))
+        return (s if s > 0 else 20) * 1000
     except ValueError:
         return DEFAULT_TIMEOUT_MS
 
 
+def _make_client(api_key: str):
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=_get_timeout_ms()),
+    )
+
+
 # ---------------------------------------------------------------------------
-# Public status helpers
+# Status tracking
 # ---------------------------------------------------------------------------
 
-# Tracks the outcome of the most recent generate call so the dashboard can show
-# a live AI status. Updated only by generate_incident_summary().
 _last_status: dict = {
-    "state": "not_configured",     # connected | error | not_configured
+    "state": "not_configured",
+    "reason": None,
     "detail": "No API call made yet.",
     "model": DEFAULT_MODEL,
     "verified": True,
@@ -97,18 +90,21 @@ _last_status: dict = {
 }
 
 
+def _set_status(state, reason, model, configured, detail=None):
+    _last_status.update(state=state, reason=reason, model=model,
+                        configured=configured,
+                        detail=detail or reason or state)
+
+
 def is_configured() -> bool:
-    """True if an API key is present in the environment."""
     return _get_api_key() is not None
 
 
 def get_status() -> dict:
-    """Return the current AI status snapshot for the dashboard."""
     _last_status["configured"] = is_configured()
     if not is_configured() and _last_status["state"] == "connected":
-        # Key was removed after a successful call — reflect reality.
-        _last_status["state"] = "not_configured"
-        _last_status["detail"] = "API key is missing."
+        _last_status.update(state="not_configured", reason="no key found",
+                            detail="API key is missing.")
     return dict(_last_status)
 
 
@@ -122,305 +118,476 @@ def get_model_info() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Prompt construction (constrains the model's behaviour)
+# Helpers
 # ---------------------------------------------------------------------------
 
-SYSTEM_INSTRUCTION = """You are AccidentGuard's safety assistant. You review \
-SIMULATED driving-event data produced by a hackathon prototype. There are NO \
-real sensors, NO real GPS, and NO real accidents — the readings are illustrative.
-
-Strict rules you MUST follow:
-1. Treat every reading as illustrative simulation data, not a measurement.
-2. Do NOT invent sensor readings, speeds, locations, or values that are not in the input.
-3. Do NOT claim certainty that a real accident occurred. Use cautious language \
-such as "the data suggests" or "if this pattern occurred in a real vehicle".
-4. You are NOT a replacement for emergency professionals. For anything that could \
-be a real-world incident, advise contacting actual emergency services.
-5. Keep language simple and non-technical so a layperson can understand it.
-
-Respond using EXACTLY these four labelled sections, each starting on its own line, in order:
-SUMMARY: 2 to 4 sentences in plain language.
-ATTENTION: comma-separated details from the supplied data that may need attention, or the word none.
-RECOMMENDATIONS: cautious next steps, each on its own line starting with "- ".
-SEVERITY_OPINION: exactly one of low, medium, high, or critical."""
+def _sanitize(msg: str) -> str:
+    key = _get_api_key()
+    if key and key in msg:
+        msg = msg.replace(key, "***REDACTED***")
+    return re.sub(r"(key=)[^\s&]+", r"\1***REDACTED***", msg)
 
 
-def _build_user_prompt(payload: dict) -> str:
-    """Render the incident payload as a readable, privacy-safe text block."""
-    readings = payload.get("simulated_readings", {})
+def _classify_error(exc) -> str:
+    msg = _sanitize(str(exc)).lower()
+    if "timeout" in msg or "timed out" in msg:
+        return "timeout or quota"
+    if "quota" in msg or "rate" in msg or "resourceexhausted" in msg or "429" in msg:
+        return "timeout or quota"
+    if "not found" in msg or "model not found" in msg or "404" in msg:
+        return "model not found"
+    if ("api key" in msg or "not valid" in msg or "invalid" in msg or
+            "permission" in msg or "forbidden" in msg or "denied" in msg or
+            "unauth" in msg):
+        return "key rejected"
+    return "api error"
+
+
+def _strip_fences(text: str) -> str:
+    t = text.strip()
+    if t.startswith("```"):
+        nl = t.find("\n")
+        t = t[nl + 1:] if nl != -1 else ""
+        if t.endswith("```"):
+            t = t[: t.rfind("```")]
+    return t.strip()
+
+
+def _parse_json(text: str) -> dict:
+    """Strip fences, then extract the first {...} block and parse it."""
+    t = _strip_fences(text)
+    start = t.find("{")
+    end = t.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("No JSON object found in model response.")
+    try:
+        return json.loads(t[start: end + 1])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON from model: {exc.msg}")
+
+
+_VALID_SEV = {"low", "medium", "high", "critical"}
+
+
+def _norm_sev(v) -> str:
+    s = str(v or "low").lower().strip()
+    return s if s in _VALID_SEV else "low"
+
+
+def _normalize_assessment(obj: dict) -> dict:
+    sev = _norm_sev(obj.get("severity", "low"))
+    try:
+        conf = max(0.0, min(1.0, float(obj.get("confidence", 0.5))))
+    except (TypeError, ValueError):
+        conf = 0.5
+    evidence = obj.get("evidence", [])
+    if not isinstance(evidence, list):
+        evidence = [str(evidence)] if evidence else []
+    evidence = [str(e).strip() for e in evidence if str(e).strip()]
+    briefing = obj.get("responder_briefing", [])
+    if not isinstance(briefing, list):
+        briefing = [str(briefing)] if briefing else []
+    briefing = [str(b).strip() for b in briefing if str(b).strip()]
+    action = str(obj.get("action", "") or "").strip()
+    uncertainty = str(obj.get("uncertainty", "") or "").strip()
+    alerts = {k: str(obj.get(k, "") or "").strip() for k in ("alert_en", "alert_kn", "alert_hi")}
+    summary = action or f"Assessed severity: {sev}."
+    return {
+        "severity_opinion": sev, "confidence": conf, "evidence": evidence,
+        "uncertainty": uncertainty, "action": action,
+        "alert_en": alerts["alert_en"], "alert_kn": alerts["alert_kn"],
+        "alert_hi": alerts["alert_hi"], "responder_briefing": briefing,
+        "summary": summary, "attention_points": evidence, "recommendations": briefing,
+    }
+
+
+# ---------------------------------------------------------------------------
+# System instruction (placed at start of user prompt for Gemma on Gemini API)
+# ---------------------------------------------------------------------------
+
+_SYSTEM_HEADER = (
+    "You are AccidentGuard's safety assistant for a SIMULATION PROTOTYPE. "
+    "The data is SIMULATED — there are NO real sensors, NO real GPS, NO real accidents. "
+    "Rules you MUST follow:\n"
+    "1. Every reading is illustrative simulation data — do NOT invent values.\n"
+    "2. Do NOT claim certainty about a real accident; use cautious language.\n"
+    "3. You are NOT a replacement for real emergency professionals.\n"
+    "4. Output ONLY a single JSON object with no markdown, no code fences, no prose.\n\n"
+)
+
+
+# ---------------------------------------------------------------------------
+# Call 1 — Incident assessment
+# ---------------------------------------------------------------------------
+
+def _build_assessment_prompt(payload: dict, fusion: dict, filter_res: dict) -> str:
+    r = payload.get("simulated_readings", {})
+    fusion_summary = (
+        f"Fusion: {fusion.get('agreeing_signals', 0)} of 6 signals agree. "
+        f"Signals: {', '.join(fusion.get('signals_detail', [])) or 'none'}. "
+        f"Has vehicle/stop signal: {fusion.get('has_vehicle_or_stop', False)}."
+    )
+    filter_summary = (
+        f"False-alarm filter: {'PASSED' if filter_res.get('passed') else 'REJECTED — ' + filter_res.get('reason', '')}."
+    )
     lines = [
-        "AccidentGuard simulated event review request.",
-        "Note: the data below is SIMULATED for a prototype demo.",
+        _SYSTEM_HEADER,
+        "Return ONLY a JSON object with these exact keys:",
+        '{"severity":"low|medium|high|critical","confidence":0.0-1.0,'
+        '"evidence":["string"],"uncertainty":"string","action":"string",'
+        '"alert_en":"first-aid tip","alert_kn":"tip in Kannada","alert_hi":"tip in Hindi",'
+        '"responder_briefing":["line1","line2","line3"]}',
         "",
+        "AccidentGuard simulated event review request.",
         f"Event ID: {payload.get('event_id', 'unknown')}",
         f"Timestamp: {payload.get('timestamp', 'unknown')}",
         f"Rule-engine classification: {payload.get('category', 'unknown')}",
         f"Rule-engine severity: {payload.get('severity', 'unknown')}",
-        f"Simulated location label: {readings.get('location_label', 'unknown')}",
+        f"Location (simulated): {r.get('location_label', 'unknown')}",
         "",
         "Simulated readings:",
-        f"- speed: {readings.get('speed_kmh', 'N/A')} km/h",
-        f"- speed change: {readings.get('speed_delta_kmh', 'N/A')} km/h",
-        f"- deceleration: {readings.get('deceleration_g', 'N/A')} g",
-        f"- impact score (0..1): {readings.get('impact_score', 'N/A')}",
-        f"- lane deviation: {readings.get('lane_deviation_m', 'N/A')} m",
+        f"  speed: {r.get('speed_kmh', 'N/A')} km/h",
+        f"  speed change: {r.get('speed_delta_kmh', 'N/A')} km/h",
+        f"  deceleration: {r.get('deceleration_g', 'N/A')} g",
+        f"  impact score (0-1): {r.get('impact_score', 'N/A')}",
+        f"  lane deviation: {r.get('lane_deviation_m', 'N/A')} m",
         "",
+        fusion_summary,
+        filter_summary,
         f"Rule-engine notes: {payload.get('rule_engine_notes', '')}",
         "",
-        "Provide the SUMMARY, ATTENTION, RECOMMENDATIONS, and SEVERITY_OPINION sections now.",
+        "Return ONLY the JSON object.",
     ]
     return "\n".join(lines)
 
 
+def generate_incident_summary(payload: dict,
+                               fusion: dict | None = None,
+                               filter_res: dict | None = None) -> dict:
+    """Call 1: assess the incident. Returns structured dict."""
+    if not isinstance(payload, dict):
+        payload = {}
+    fusion = fusion or {}
+    filter_res = filter_res or {"passed": True, "reason": "", "filter_label": "passed"}
+
+    api_key = _get_api_key()
+    model = _get_model_id()
+
+    if not api_key:
+        _set_status("not_configured", "no key found", model, False,
+                    "GEMINI_API_KEY not set.")
+        return _fallback_summary(payload, "not_configured")
+
+    prompt = _build_assessment_prompt(payload, fusion, filter_res)
+    try:
+        client = _make_client(api_key)
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+            ),
+        )
+        text = response.text
+        if not text or not text.strip():
+            raise ValueError("Gemma returned an empty response.")
+        norm = _normalize_assessment(_parse_json(text))
+        _set_status("connected", None, model, True,
+                    f"Real response received from {model}.")
+        return {
+            "status": "connected", "source": "gemma", "model": model,
+            "used_fallback": False, "error": None, **norm,
+        }
+    except (genai_errors.APIError, genai_errors.ClientError,
+            genai_errors.ServerError) as exc:
+        reason = _classify_error(exc)
+        safe = _sanitize(str(exc))
+        _set_status("error", reason, model, True, safe)
+        r = _fallback_summary(payload, reason)
+        r["error"] = safe
+        return r
+    except ValueError as exc:
+        safe = _sanitize(str(exc))
+        _set_status("error", "invalid JSON", model, True,
+                    f"Model did not return valid JSON: {safe}")
+        r = _fallback_summary(payload, "invalid JSON")
+        r["error"] = f"Model did not return valid JSON: {safe}"
+        return r
+    except Exception as exc:
+        reason = _classify_error(exc)
+        safe = _sanitize(str(exc))
+        _set_status("error", reason, model, True, safe)
+        r = _fallback_summary(payload, reason)
+        r["error"] = safe
+        return r
+
+
 # ---------------------------------------------------------------------------
-# Response parsing
+# Call 2 — Dispatch briefing update
 # ---------------------------------------------------------------------------
 
-def _parse_structured(text: str) -> dict:
-    """Extract the four labelled sections from the model response."""
-    result = {
-        "summary": text.strip(),
-        "attention_points": [],
-        "recommendations": [],
-        "severity_opinion": None,
-        "raw": text,
+def generate_dispatch_briefing(assessment: dict,
+                                victim_answer: Optional[str],
+                                seconds_without_response: float,
+                                nearest_unit: str,
+                                eta_min: int) -> dict:
+    """Call 2: update the 3-line responder briefing at dispatch time."""
+    api_key = _get_api_key()
+    model = _get_model_id()
+
+    victim_status = (
+        f"Victim answered: {victim_answer}" if victim_answer
+        else f"No victim response for {int(seconds_without_response)}s."
+    )
+    prompt = (
+        f"{_SYSTEM_HEADER}"
+        "Return ONLY a JSON object:\n"
+        '{"responder_briefing":["line1","line2","line3"],"updated_action":"string"}\n\n'
+        "Update the responder briefing for this dispatch event (SIMULATED):\n"
+        f"Severity: {assessment.get('severity_opinion', 'unknown')}\n"
+        f"Confidence: {assessment.get('confidence', 'N/A')}\n"
+        f"Action: {assessment.get('action', '')}\n"
+        f"Original briefing: {assessment.get('responder_briefing', [])}\n"
+        f"Victim status: {victim_status}\n"
+        f"Unit dispatched: {nearest_unit} (simulated), ETA {eta_min} min.\n"
+        "Keep briefing to 3 short lines. Output ONLY the JSON object."
+    )
+
+    if not api_key:
+        return {"source": "fallback", "responder_briefing": assessment.get("responder_briefing", []),
+                "updated_action": assessment.get("action", ""),
+                "note": "Non-AI fallback (no key)"}
+
+    try:
+        client = _make_client(api_key)
+        response = client.models.generate_content(
+            model=model, contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+            ),
+        )
+        obj = _parse_json(response.text or "")
+        briefing = obj.get("responder_briefing", assessment.get("responder_briefing", []))
+        if not isinstance(briefing, list):
+            briefing = assessment.get("responder_briefing", [])
+        return {
+            "source": "gemma",
+            "responder_briefing": [str(b).strip() for b in briefing if str(b).strip()],
+            "updated_action": str(obj.get("updated_action", "") or "").strip(),
+            "note": None,
+        }
+    except Exception as exc:
+        return {
+            "source": "fallback",
+            "responder_briefing": assessment.get("responder_briefing", []),
+            "updated_action": assessment.get("action", ""),
+            "note": f"Briefing reused from Call 1 (Call 2 failed: {_sanitize(str(exc))[:80]})",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Call 3 — Crash photo analysis (optional)
+# ---------------------------------------------------------------------------
+
+def analyse_crash_photo(image_bytes: bytes, mime_type: str) -> dict:
+    """
+    Attempt to analyse a crash photo using Gemma 4 vision.
+    Returns a structured dict. If the model doesn't support images, returns
+    a clearly-labelled 'scene_analysis_unavailable' result.
+    """
+    api_key = _get_api_key()
+    model = _get_model_id()
+
+    if not api_key:
+        return _photo_unavailable("No API key configured.")
+
+    if not image_bytes:
+        return _photo_unavailable("No image data provided.")
+
+    prompt_text = (
+        f"{_SYSTEM_HEADER}"
+        "You are viewing an image submitted by a simulated bystander at an accident scene. "
+        "This is a SIMULATION — treat the image as illustrative only.\n"
+        "Return ONLY a JSON object:\n"
+        '{"vehicles":0-9,"visible_injuries":"yes|no|unclear",'
+        '"fire_or_fuel_risk":"yes|no|unclear","road_blocked":"yes|no|unclear",'
+        '"notes":"short string","confidence":0.0-1.0,"unclear":false}\n'
+        "If you cannot see the scene clearly, set unclear=true and use 'unclear' for the fields. "
+        "Do NOT invent details. This is NOT a medical diagnosis. "
+        "Output ONLY the JSON object."
+    )
+
+    try:
+        client = _make_client(api_key)
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        image_part = types.Part.from_bytes(data=base64.b64decode(b64), mime_type=mime_type)
+        response = client.models.generate_content(
+            model=model,
+            contents=[prompt_text, image_part],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+            ),
+        )
+        text = response.text or ""
+        obj = _parse_json(text)
+        return {
+            "available": True,
+            "source": "gemma",
+            "vehicles": int(obj.get("vehicles", 0)),
+            "visible_injuries": str(obj.get("visible_injuries", "unclear")),
+            "fire_or_fuel_risk": str(obj.get("fire_or_fuel_risk", "unclear")),
+            "road_blocked": str(obj.get("road_blocked", "unclear")),
+            "notes": str(obj.get("notes", "") or "").strip(),
+            "confidence": float(obj.get("confidence", 0.5)),
+            "unclear": bool(obj.get("unclear", False)),
+            "error": None,
+        }
+    except Exception as exc:
+        safe = _sanitize(str(exc))
+        low = safe.lower()
+        # Detect unsupported image for this model gracefully
+        if any(w in low for w in ("image", "vision", "multimodal", "content type",
+                                   "invalid", "unsupported", "mime")):
+            return _photo_unavailable(f"Scene analysis unavailable for this model. ({safe[:80]})")
+        return _photo_unavailable(f"Photo analysis failed: {safe[:120]}")
+
+
+def _photo_unavailable(reason: str) -> dict:
+    return {
+        "available": False,
+        "source": "unavailable",
+        "vehicles": None, "visible_injuries": None,
+        "fire_or_fuel_risk": None, "road_blocked": None,
+        "notes": reason, "confidence": None, "unclear": True,
+        "error": reason,
     }
 
-    def _section(name: str) -> Optional[str]:
-        # Match "NAME:" up to the next section label or end of text.
-        pattern = rf"{name}:\s*(.*?)(?=\n\s*(?:SUMMARY|ATTENTION|RECOMMENDATIONS|SEVERITY_OPINION):|\Z)"
-        m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-        return m.group(1).strip() if m else None
-
-    summary = _section("SUMMARY")
-    if summary:
-        result["summary"] = summary
-
-    attention = _section("ATTENTION")
-    if attention and attention.lower() != "none":
-        result["attention_points"] = [a.strip() for a in attention.split(",") if a.strip()]
-
-    recs = _section("RECOMMENDATIONS")
-    if recs:
-        result["recommendations"] = [
-            r.lstrip("- ").strip() for r in recs.splitlines() if r.strip()
-        ]
-
-    sev = _section("SEVERITY_OPINION")
-    if sev:
-        sev_low = sev.strip().lower()
-        if sev_low in ("low", "medium", "high", "critical"):
-            result["severity_opinion"] = sev_low
-
-    return result
-
 
 # ---------------------------------------------------------------------------
-# Fallback (NON-AI) — for demo continuity only
+# Fallback (NON-AI) — clearly labelled, never called Gemma
 # ---------------------------------------------------------------------------
+
+_FALLBACK_ALERTS = {
+    "possible_accident": {
+        "en": "If hurt, stay still and call for help. Do not move unless in danger.",
+        "kn": "ಗಾಯವಾಗಿದ್ದರೆ ಆಚೆ ಕರೆದು ಸಹಾಯ ಪಡೆಯಿರಿ. ಅಪಾಯವಿಲ್ಲದಿದ್ದರೆ ಆಚೆ ಚಲಿಸಬೇಡಿ.",
+        "hi": "चोट लगी हो तो सहायता बुलाएँ। खतरा न हो तो हिलें नहीं।",
+    },
+    "suspicious_event": {
+        "en": "Slow down and check your surroundings. Pull over if something feels wrong.",
+        "kn": "ವೇಗ ಕಡಿಮೆ ಮಾಡಿ, ಸುತ್ತ ಗಮನಿಸಿ. ಏನಾದರೂ ತಪ್ಪಿದ್ದರೆ ಬದಿಗೆ ನಿಲ್ಲಿಸಿ.",
+        "hi": "रफ़्तार घटाएँ और ध्यान दें। ग़लती महसूस हो तो बाज़ू में खड़े करें।",
+    },
+    "normal_driving": {
+        "en": "No action needed — driving looks normal.",
+        "kn": "ಯಾವುದೇ ಕ್ರಮ ಬೇಡ — ಚಾಲನೆ ಸಾಮಾನ್ಯ.",
+        "hi": "कोई कार्रवाई आवश्यक नहीं — ड्राइविंग सामान्य।",
+    },
+}
+
 
 def _fallback_summary(payload: dict, reason: str) -> dict:
-    """
-    Build a clearly-labelled, NON-AI summary from the rule-engine data alone.
-    This is used when the API is unavailable. It is NEVER presented as Gemma output.
-    """
-    cat = payload.get("category", "unknown")
-    sev = payload.get("severity", "unknown")
+    cat = payload.get("category", "normal_driving")
+    sev = payload.get("severity", "low")
     readings = payload.get("simulated_readings", {})
+    alerts = _FALLBACK_ALERTS.get(cat, _FALLBACK_ALERTS["normal_driving"])
 
     if cat == "possible_accident":
-        summary_text = (
-            "Several simulated readings show a sharp combination of hard braking, a "
-            "high impact score, and large lane deviation. In a real vehicle this "
-            "pattern would warrant immediate attention, but this is simulated data only."
-        )
-        recs = [
-            "If this were a real event, stop the vehicle safely and check for injury.",
+        action = ("Several simulated readings show hard braking, high impact and "
+                  "large lane deviation. In a real vehicle this would warrant immediate "
+                  "attention — but this is simulated data only.")
+        briefing = [
+            "If real, stop safely and check for injury.",
             "Contact actual emergency services if anyone may be hurt.",
-            "Do not move an injured person unless there is immediate danger.",
-            "Record the time and circumstances for a real-world follow-up.",
+            "Do not move an injured person unless in immediate danger.",
         ]
     elif cat == "suspicious_event":
-        summary_text = (
-            "Some simulated readings look unusual — for example a sudden speed change "
-            "or notable braking — but they do not by themselves indicate an accident."
-        )
-        recs = [
-            "Treat as a caution flag and continue monitoring the simulated data.",
+        action = ("Some simulated readings look unusual — sudden speed change or "
+                  "notable braking — but do not by themselves indicate an accident.")
+        briefing = [
+            "Treat as caution. Keep monitoring the simulated data.",
             "In a real vehicle, slow down and increase following distance.",
-            "If something felt wrong in a real situation, pull over when safe to check.",
+            "Pull over when safe if something felt wrong.",
         ]
     else:
-        summary_text = (
-            "All simulated readings are within normal ranges. No rule-based concern "
-            "was triggered for this event."
-        )
-        recs = [
+        action = "All simulated readings within normal ranges. No concern triggered."
+        briefing = [
             "No action needed for this simulated event.",
-            "Continue normal driving behaviour in a real-world equivalent.",
+            "Continue normal driving in a real-world equivalent.",
         ]
 
     attention = [k for k, v in readings.items()
                  if isinstance(v, (int, float)) and v != 0 and k != "speed_kmh"]
 
     return {
-        "status": "error" if reason != "not_configured" else "not_configured",
+        "status": "error" if reason not in ("not_configured", "ai_disabled") else reason,
         "source": "fallback",
-        "model": "rule-based fallback (non-AI)",
-        "summary": summary_text,
+        "model": "Non-AI fallback (rule-based template)",
+        "summary": action,
         "attention_points": [f"simulated {a}" for a in attention] or ["none"],
-        "recommendations": recs,
+        "recommendations": briefing,
         "severity_opinion": sev,
+        "confidence": None,
+        "evidence": [],
+        "uncertainty": "Gemma unavailable — rule-based assessment only.",
+        "action": action,
+        "alert_en": alerts["en"],
+        "alert_kn": alerts["kn"],
+        "alert_hi": alerts["hi"],
+        "responder_briefing": briefing,
         "used_fallback": True,
         "fallback_reason": reason,
-        "error": reason if reason != "not_configured" else None,
+        "error": reason if reason not in ("not_configured", "ai_disabled") else None,
     }
 
 
 # ---------------------------------------------------------------------------
-# Sanitization — never leak the API key
+# Connection check  (/api/ai-check)
 # ---------------------------------------------------------------------------
 
-def _sanitize(message: str) -> str:
-    """Remove the API key from any string before it reaches the user/logs."""
-    key = _get_api_key()
-    if key and key in message:
-        message = message.replace(key, "***REDACTED***")
-    # Also redact common bearer patterns defensively.
-    message = re.sub(r"(key=)[^\s&]+", r"\1***REDACTED***", message)
-    return message
-
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-
-def generate_incident_summary(payload: dict) -> dict:
-    """
-    Send an incident payload to Gemma 4 and return a structured result.
-
-    Returns a dict with:
-        status            connected | error | not_configured
-        source            gemma | fallback
-        model             the model id used, or the fallback label
-        summary           plain-language summary
-        attention_points  list[str]
-        recommendations   list[str]
-        severity_opinion  low|medium|high|critical | None
-        used_fallback     bool
-        error             safe message or None (never contains the key)
-    """
-    if not isinstance(payload, dict):
-        payload = {}
-
+def check_connection() -> dict:
+    """Make one tiny real Gemma call. Returns connected or a specific reason."""
     api_key = _get_api_key()
     model = _get_model_id()
-
-    # --- State 1: Not configured -------------------------------------------
     if not api_key:
-        _last_status.update(
-            state="not_configured",
-            detail="GEMINI_API_KEY is not set. Provide a key in .env to enable AI.",
-            model=model,
-            configured=False,
-        )
-        return _fallback_summary(payload, "not_configured")
-
-    # --- State 2/3: Make the real API call --------------------------------
-    prompt = _build_user_prompt(payload)
+        _set_status("not_configured", "no key found", model, False,
+                    "GEMINI_API_KEY not set.")
+        return {"status": "not_configured", "reason": "no key found",
+                "model": model, "detail": "GEMINI_API_KEY not set.", "response": None}
     try:
-        client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=_get_timeout_ms()),
+        client = _make_client(api_key)
+        resp = client.models.generate_content(
+            model=model, contents="Reply with exactly one word: READY",
         )
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                temperature=0.3,
-                # Keep responses fast for a live demo; "minimal" disables long thinking.
-                thinking_config=types.ThinkingConfig(thinking_level="minimal"),
-            ),
-        )
-
-        # response.text raises if the output is empty/blocked.
-        text = response.text
-        if not text or not text.strip():
-            raise RuntimeError("Gemma returned an empty response.")
-
-        parsed = _parse_structured(text)
-        _last_status.update(
-            state="connected",
-            detail=f"Real response received from {model}.",
-            model=model,
-            configured=True,
-        )
-        return {
-            "status": "connected",
-            "source": "gemma",
-            "model": model,
-            "summary": parsed["summary"],
-            "attention_points": parsed["attention_points"],
-            "recommendations": parsed["recommendations"],
-            "severity_opinion": parsed["severity_opinion"],
-            "used_fallback": False,
-            "error": None,
-        }
-
+        text = (resp.text or "").strip()
+        if not text:
+            raise ValueError("empty response")
+        _set_status("connected", None, model, True, "Real Gemma response received.")
+        return {"status": "connected", "reason": None, "model": model,
+                "detail": "Real Gemma response received.",
+                "response": _sanitize(text)}
     except (genai_errors.APIError, genai_errors.ClientError,
             genai_errors.ServerError) as exc:
+        reason = _classify_error(exc)
         safe = _sanitize(str(exc))
-        _last_status.update(
-            state="error",
-            detail=f"API request failed: {safe}",
-            model=model,
-            configured=True,
-        )
-        result = _fallback_summary(payload, "api_error")
-        result["error"] = safe
-        return result
-
-    except Exception as exc:  # network / timeout / parse / unknown
+        _set_status("error", reason, model, True, safe)
+        return {"status": "error", "reason": reason, "model": model,
+                "detail": safe, "response": None}
+    except Exception as exc:
+        reason = _classify_error(exc)
         safe = _sanitize(str(exc))
-        # Classify likely timeouts for a clearer message.
-        lowered = safe.lower()
-        is_timeout = "timeout" in lowered or "timed out" in lowered
-        reason = "timeout" if is_timeout else "unknown_error"
-        _last_status.update(
-            state="error",
-            detail=f"Request failed ({reason}): {safe}",
-            model=model,
-            configured=True,
-        )
-        result = _fallback_summary(payload, reason)
-        result["error"] = safe if reason != "timeout" else "The request timed out."
-        return result
+        _set_status("error", reason, model, True, safe)
+        return {"status": "error", "reason": reason, "model": model,
+                "detail": safe, "response": None}
 
-
-# ---------------------------------------------------------------------------
-# Convenience for manual / integration testing
-# ---------------------------------------------------------------------------
 
 def quick_self_test() -> dict:
-    """
-    Make one real API call with a tiny prompt to confirm the key + model work.
-    Used by the integration test script and the /api/ai/test endpoint.
-    """
-    api_key = _get_api_key()
-    model = _get_model_id()
-    if not api_key:
-        return {"status": "not_configured", "model": model, "response": None,
-                "error": "GEMINI_API_KEY is not set."}
-    try:
-        client = genai.Client(api_key=api_key,
-                              http_options=types.HttpOptions(timeout=_get_timeout_ms()))
-        resp = client.models.generate_content(
-            model=model,
-            contents="Reply with exactly the word: READY",
-        )
-        return {"status": "connected", "model": model,
-                "response": _sanitize(resp.text or ""), "error": None}
-    except Exception as exc:
-        return {"status": "error", "model": model, "response": None,
-                "error": _sanitize(str(exc))}
+    """Compatibility wrapper used by manual_integration_check.py."""
+    res = check_connection()
+    return {
+        "status": res["status"], "model": res["model"], "response": res["response"],
+        "error": None if res["status"] == "connected" else (res.get("detail") or res.get("reason")),
+    }

@@ -1,143 +1,193 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AccidentGuard — AI-Powered Accident Detection & Alert (Simulation)</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AccidentGuard — AI-Assisted Accident Detection & Emergency Alert</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"/>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+<a class="skip-link" href="#main">Skip to content</a>
 
-  <!-- ============================ HEADER ============================ -->
-  <header class="app-header">
-    <div class="header-inner">
-      <div class="brand">
-        <div class="logo" aria-hidden="true">🛡️</div>
-        <div class="brand-text">
-          <h1>AccidentGuard</h1>
-          <p class="tagline">
-            AI-Powered Accident Detection &amp; Alert System — simulation prototype
-          </p>
-        </div>
+<!-- HEADER -->
+<header class="app-header">
+  <div class="header-inner">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">🛡️</div>
+      <div class="brand-text">
+        <h1>AccidentGuard</h1>
+        <p class="tagline">AI-Assisted Accident Detection &amp; Emergency Alert Platform — simulation prototype</p>
       </div>
-
-      <div class="ai-badge" id="aiBadge" data-state="not_configured" role="status"
-           aria-live="polite" aria-atomic="true">
+    </div>
+    <div class="header-right">
+      <nav class="screen-nav" aria-label="Screens">
+        <a href="/victim" class="nav-link">🧍 Victim</a>
+        <a href="/ambulance" class="nav-link">🚑 Ambulance</a>
+      </nav>
+      <button id="btnAiCheck" class="btn btn-ghost btn-sm" type="button">Test AI connection</button>
+      <div class="ai-badge" id="aiBadge" data-state="not_configured" role="status" aria-live="polite" aria-atomic="true">
         <span class="ai-dot" aria-hidden="true"></span>
         <span class="ai-label">AI: <strong id="aiStateText">Not configured</strong></span>
         <span class="ai-model" id="aiModel">model: {{ model_info.model }}</span>
       </div>
     </div>
-  </header>
+  </div>
+</header>
 
-  <!-- ============================ DESCRIPTION ============================ -->
-  <section class="description">
-    <p>
-      AccidentGuard demonstrates a pipeline for road-safety monitoring:
-      <strong>simulated driving event → Python rule-based classification → real
-      Google Gemma&nbsp;4 summary → dashboard display</strong>.
-      All sensor-like data is illustrative and simulated — this prototype does
-      <em>not</em> perform real-world accident detection, live GPS tracking, or
-      emergency notification.
-    </p>
+<section class="description">
+  <p><em>Sensors detect. Gemma&nbsp;4 interprets and communicates. Gemma&nbsp;4 reasons. Python decides.</em> — 
+  Phone and vehicle sensors generate simulated readings, sensor fusion counts independent agreement signals, a false-alarm filter removes phone drops and potholes, then Gemma&nbsp;4 assesses the incident and Python makes the final severity decision.</p>
+</section>
+
+<main id="main" class="container">
+
+  <!-- CONTROLS -->
+  <section class="card controls" aria-label="Demo controls">
+    <div class="controls-row">
+      <button id="btnStartDemo" class="btn btn-primary" type="button">▶ Start Demo</button>
+      <button id="btnStopDemo" class="btn btn-ghost" type="button" disabled>■ Stop</button>
+      <span class="ctrl-sep" aria-hidden="true"></span>
+      <label for="scenarioSelect" class="field-label">Scenario:</label>
+      <select id="scenarioSelect" class="select">
+        <option value="random">Random</option>
+        <option value="normal_driving">Normal driving</option>
+        <option value="suspicious_event">Suspicious event</option>
+        <option value="possible_accident">Possible accident</option>
+        <option value="real_crash">Real crash</option>
+        <option value="phone_drop">Phone drop</option>
+        <option value="pothole">Pothole</option>
+        <option value="hard_braking">Hard braking</option>
+      </select>
+      <button id="btnGenerate" class="btn btn-secondary" type="button">⚡ Generate Event</button>
+      <button id="btnReset" class="btn btn-ghost" type="button">Reset</button>
+    </div>
+    <div class="controls-row quick-row">
+      <span class="field-label">Quick demo:</span>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="quickScenario('real_crash')">🚗 Real crash</button>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="quickScenario('phone_drop')">📱 Phone drop</button>
+    </div>
+    <div class="controls-row toggles-row">
+      <label class="toggle">
+        <input type="checkbox" id="toggleAi" {% if toggles.ai_enabled %}checked{% endif %}/>
+        <span class="toggle-track"></span>
+        <span class="toggle-label">Gemma 4 ON (OFF = rule-based template)</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="toggleAutoAccept" {% if toggles.auto_accept %}checked{% endif %}/>
+        <span class="toggle-track"></span>
+        <span class="toggle-label">Ambulance auto-accepts</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="toggleVictimAuto" {% if toggles.victim_auto_respond %}checked{% endif %}/>
+        <span class="toggle-track"></span>
+        <span class="toggle-label">Victim auto-responds</span>
+      </label>
+    </div>
+    <p class="demo-hint" id="demoHint">Start Demo cycles through scenarios every 4 s. Use Quick demo buttons to test individual cases.</p>
   </section>
 
-  <!-- ============================ CONTROLS ============================ -->
-  <main id="main" class="container">
-    <section class="card controls" aria-label="Demo controls">
-      <div class="controls-row">
-        <button id="btnStartDemo" class="btn btn-primary" type="button">
-          ▶ Start Demo
-        </button>
-        <button id="btnStopDemo" class="btn btn-ghost" type="button" disabled>
-          ■ Stop Demo
-        </button>
-        <span class="ctrl-sep" aria-hidden="true"></span>
-        <label for="categorySelect" class="field-label">Event type:</label>
-        <select id="categorySelect" class="select">
-          <option value="random">Random</option>
-          <option value="normal_driving">Normal driving</option>
-          <option value="suspicious_event">Suspicious event</option>
-          <option value="possible_accident">Possible accident</option>
-        </select>
-        <button id="btnGenerate" class="btn btn-secondary" type="button">
-          ⚡ Generate Sample Event
-        </button>
-        <button id="btnReset" class="btn btn-ghost" type="button">Reset</button>
-      </div>
-      <p class="demo-hint" id="demoHint">Tip: Start Demo auto-generates events and asks
-        Gemma 4 to summarise each one.</p>
-    </section>
+  <!-- PIPELINE STRIP -->
+  <section class="pipeline" aria-label="Pipeline">
+    <div class="pipe-step" data-step="sensor"><span class="ps-num">1</span><div class="ps-body"><span class="ps-text">Sensor data</span><span class="ps-detail" id="pSensor">—</span></div></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step" data-step="validation"><span class="ps-num">2</span><div class="ps-body"><span class="ps-text">Python validation</span><span class="ps-detail" id="pValidation">—</span></div></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step" data-step="fusion"><span class="ps-num">3</span><div class="ps-body"><span class="ps-text">Sensor fusion</span><span class="ps-detail" id="pFusion">—</span></div></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step" data-step="filter"><span class="ps-num">4</span><div class="ps-body"><span class="ps-text">False-alarm filter</span><span class="ps-detail" id="pFilter">—</span></div></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step" data-step="gemma"><span class="ps-num">5</span><div class="ps-body"><span class="ps-text">Gemma 4</span><span class="ps-detail" id="pGemma">—</span></div></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step" data-step="safety"><span class="ps-num">6</span><div class="ps-body"><span class="ps-text">Python safety layer</span><span class="ps-detail" id="pSafety">—</span></div></div>
+    <div class="pipe-arrow">→</div>
+    <div class="pipe-step" data-step="dispatch"><span class="ps-num">7</span><div class="ps-body"><span class="ps-text">Dispatch</span><span class="ps-detail" id="pDispatch">—</span></div></div>
+  </section>
 
-    <!-- ============================ STATS ============================ -->
-    <section class="stats-grid" aria-label="Event statistics">
-      <div class="stat-card">
-        <span class="stat-num" id="statTotal">0</span>
-        <span class="stat-label">Total events</span>
-      </div>
-      <div class="stat-card stat-normal">
-        <span class="stat-num" id="statNormal">0</span>
-        <span class="stat-label">Normal</span>
-      </div>
-      <div class="stat-card stat-suspicious">
-        <span class="stat-num" id="statSuspicious">0</span>
-        <span class="stat-label">Suspicious</span>
-      </div>
-      <div class="stat-card stat-accident">
-        <span class="stat-num" id="statAccident">0</span>
-        <span class="stat-label">Possible accident</span>
-      </div>
-    </section>
+  <!-- STATS -->
+  <section class="stats-grid" aria-label="Event statistics">
+    <div class="stat-card"><span class="stat-num" id="statTotal">0</span><span class="stat-label">Total events</span></div>
+    <div class="stat-card stat-normal"><span class="stat-num" id="statNormal">0</span><span class="stat-label">Normal</span></div>
+    <div class="stat-card stat-suspicious"><span class="stat-num" id="statSuspicious">0</span><span class="stat-label">Suspicious</span></div>
+    <div class="stat-card stat-accident"><span class="stat-num" id="statAccident">0</span><span class="stat-label">Possible accident</span></div>
+    <div class="stat-card stat-rejected"><span class="stat-num" id="statRejected">0</span><span class="stat-label">Rejected (filter)</span></div>
+  </section>
 
-    <!-- ============================ CURRENT EVENT ============================ -->
-    <section class="grid-two">
-      <div class="card current-event" aria-live="polite">
-        <div class="card-head">
-          <h2>Current Event</h2>
-          <span class="src-tag" title="Output of the transparent rule engine">rule engine</span>
-        </div>
-        <div id="currentEvent" class="event-empty">
-          <p class="placeholder">No event yet. Click <em>Generate Sample Event</em> or
-            <em>Start Demo</em>.</p>
-        </div>
-      </div>
+  <!-- SENSORS + RULE ENGINE -->
+  <section class="grid-three">
+    <div class="card">
+      <div class="card-head"><h2>📱 Phone sensors</h2><span class="src-tag">Simulated</span></div>
+      <div id="phonePanel"><p class="placeholder">No event yet.</p></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>🚗 Vehicle / IoT sensors</h2><span class="src-tag">Simulated</span></div>
+      <div id="vehiclePanel"><p class="placeholder">No event yet.</p></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Rule engine verdict</h2><span class="src-tag">rule engine</span></div>
+      <div id="currentEvent" class="event-empty"><p class="placeholder">No event yet.</p></div>
+    </div>
+  </section>
 
-      <div class="card ai-panel" aria-live="polite">
-        <div class="card-head">
-          <h2>Gemma 4 Incident Summary</h2>
-          <span class="src-tag" id="aiSrcTag">AI</span>
-        </div>
-        <div id="aiPanel" class="ai-empty">
-          <p class="placeholder">The Gemma 4 summary will appear here after an event
-            is analysed.</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============================ HISTORY ============================ -->
-    <section class="card history" aria-label="Incident history">
+  <!-- GEMMA + INCIDENT -->
+  <section class="grid-two">
+    <div class="card ai-panel" aria-live="polite">
       <div class="card-head">
-        <h2>Incident History</h2>
-        <span class="muted" id="historyCount">0 events</span>
+        <h2>Gemma 4 Assessment</h2>
+        <span class="src-tag" id="aiSrcTag">AI</span>
       </div>
-      <ul id="historyList" class="history-list" aria-label="Past events">
-        <li class="placeholder">No incidents recorded yet.</li>
-      </ul>
-    </section>
+      <div id="aiPanel" class="ai-empty"><p class="placeholder">The Gemma 4 assessment appears here.</p></div>
+      <!-- photo upload -->
+      <div class="photo-upload" id="photoUpload" hidden>
+        <label class="photo-label">📷 Add crash photo (optional — simulated bystander):
+          <input type="file" id="photoInput" accept="image/*" aria-label="Upload crash photo"/>
+        </label>
+        <span class="muted photo-note">Photo is sent to Gemma 4 for scene analysis. Never stored.</span>
+        <div id="photoResult" hidden></div>
+      </div>
+    </div>
 
-    <footer class="app-footer">
-      <p>
-        AccidentGuard — hackathon simulation prototype. Uses the hosted
-        Gemma 4 model <code>{{ model_info.model }}</code> via the Google Gemini API.
-        Not for real-world use.
-      </p>
-    </footer>
-  </main>
+    <div class="card">
+      <div class="card-head"><h2>Safety &amp; Incident</h2><span class="src-tag">Python decides</span></div>
+      <div id="incidentPanel"><p class="placeholder">No incident yet.</p></div>
+      <!-- victim check mirror -->
+      <div id="victimCheckPanel" hidden>
+        <div class="victim-mirror">
+          <h3>Victim check (dashboard mirror)</h3>
+          <div id="vmCountdown" class="vm-countdown"></div>
+          <div class="vm-buttons">
+            <button id="vmBtnSafe" class="btn btn-safe" type="button">🟢 I'M SAFE</button>
+            <button id="vmBtnHelp" class="btn btn-help" type="button">🔴 I NEED HELP</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-  <!-- ============================ TOAST ============================ -->
-  <div id="toast" class="toast" role="alert" aria-live="assertive" hidden></div>
+  <!-- ACTIVE INCIDENTS + HISTORY -->
+  <section class="grid-two">
+    <div class="card">
+      <div class="card-head"><h2>Active Incidents</h2><span class="muted" id="activeCount">0</span></div>
+      <ul id="incidentList" class="history-list"><li class="placeholder">None.</li></ul>
+    </div>
+    <div class="card history">
+      <div class="card-head"><h2>History</h2><span class="muted" id="historyCount">0 events</span></div>
+      <ul id="historyList" class="history-list"><li class="placeholder">No incidents recorded yet.</li></ul>
+    </div>
+  </section>
 
-  <script src="{{ url_for('static', filename='script.js') }}"></script>
+  <footer class="app-footer">
+    <p>Team Nexus · Team 11 · Hacktoberfest × VectorFlow 2026 · Challenge A: Best Use of Gemma 4<br>
+    AccidentGuard — simulation prototype. Model: <code>{{ model_info.model }}</code>. Not for real-world use.</p>
+  </footer>
+</main>
+
+<div id="toast" class="toast" role="alert" aria-live="assertive" hidden></div>
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+<script>
+function quickScenario(s) {
+  document.getElementById("scenarioSelect").value = s;
+  document.getElementById("btnGenerate").click();
+}
+</script>
 </body>
 </html>
